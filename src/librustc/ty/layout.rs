@@ -1229,7 +1229,9 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
             ty::TyRawPtr(ty::TypeAndMut { ty: pointee, .. }) => {
                 let mut data_ptr = scalar_unit(Pointer);
                 if !ty.is_unsafe_ptr() {
-                    data_ptr.valid_range.start = 1;
+                    data_ptr.valid_range.start = tcx
+                        .approx_align_of(param_env.and(pointee))?
+                        .map_or(1, |a| a.abi() as u128);
                 }
 
                 let pointee = tcx.normalize_erasing_regions(param_env, pointee);
