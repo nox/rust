@@ -281,6 +281,8 @@ define_maps! { <'tcx>
     [] fn layout_raw: layout_dep_node(ty::ParamEnvAnd<'tcx, Ty<'tcx>>)
                                   -> Result<&'tcx ty::layout::LayoutDetails,
                                             ty::layout::LayoutError<'tcx>>,
+    [] fn approx_align_of: approx_align_of_dep_node(ty::ParamEnvAnd<'tcx, Ty<'tcx>>)
+        -> Result<Option<ty::layout::Align>, ty::layout::LayoutError<'tcx>>,
 
     [] fn dylib_dependency_formats: DylibDepFormats(CrateNum)
                                     -> Lrc<Vec<(CrateNum, LinkagePreference)>>,
@@ -531,6 +533,11 @@ fn needs_drop_dep_node<'tcx>(param_env: ty::ParamEnvAnd<'tcx, Ty<'tcx>>) -> DepC
 
 fn layout_dep_node<'tcx>(param_env: ty::ParamEnvAnd<'tcx, Ty<'tcx>>) -> DepConstructor<'tcx> {
     DepConstructor::Layout { param_env }
+}
+
+fn approx_align_of_dep_node<'tcx>(param_env: ty::ParamEnvAnd<'tcx, Ty<'tcx>>)
+                                  -> DepConstructor<'tcx> {
+    DepConstructor::ApproxAlignOf { param_env }
 }
 
 fn lint_levels_node<'tcx>(_: CrateNum) -> DepConstructor<'tcx> {

@@ -913,9 +913,28 @@ fn layout_raw<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     layout
 }
 
+fn approx_align_of<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
+                             query: ty::ParamEnvAnd<'tcx, Ty<'tcx>>)
+                             -> Result<Option<Align>, LayoutError<'tcx>>
+{
+    let rec_limit = tcx.sess.recursion_limit.get();
+    let depth = tcx.layout_depth.get();
+    if depth > rec_limit {
+        tcx.sess.fatal(
+            &format!("overflow representing the type `{}`", query.value));
+    }
+
+    tcx.layout_depth.set(depth+1);
+    let align = approx_align_of_uncached(tcx, query);
+    tcx.layout_depth.set(depth);
+
+    align
+}
+
 pub fn provide(providers: &mut ty::maps::Providers) {
     *providers = ty::maps::Providers {
         layout_raw,
+        approx_align_of,
         ..*providers
     };
 }
@@ -1852,6 +1871,130 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
             }
         }
     }
+}
+
+fn approx_align_of_uncached<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
+                                      query: ty::ParamEnvAnd<'tcx, Ty<'tcx>>)
+                                      -> Result<Option<Align>, LayoutError<'tcx>>
+{
+    fn univariant_align<'tcx, I>(iter: I) -> Result<Option<Align>, LayoutError<'tcx>>
+    where
+        I: IntoIterator<Item = Result<Option<Align>, LayoutError<'tcx>>>,
+    {
+        let mut align = Align::from_bytes(1, 1).unwrap();
+        for item in iter {
+            align = align.max(match item? {
+                None => return Ok(None),
+                Some(a) => a,
+            });
+        }
+        Ok(Some(align))
+    }
+
+    let (param_env, ty) = query.into_parts();
+    let dl = tcx.data_layout();
+    Ok(match ty.sty {
+        // Basic scalars.
+        ty::TyBool => Some(dl.i8_align),
+        ty::TyChar => Some(dl.i32_align),
+        ty::TyInt(ity) => Some(Integer::from_attr(dl, attr::SignedInt(ity)).align(dl)),
+        ty::TyUint(ity) => Some(Integer::from_attr(dl, attr::UnsignedInt(ity)).align(dl)),
+        ty::TyFloat(FloatTy::F32) => Some(dl.f32_align),
+        ty::TyFloat(FloatTy::F64) => Some(dl.f64_align),
+        ty::TyFnPtr(_) => Some(dl.pointer_align),
+
+        // The never type.
+        ty::TyNever => None,
+
+        // Potentially-fat pointers.
+        ty::TyRef(_, _) | ty::TyRawPtr(_) => Some(dl.pointer_align),
+
+        // Arrays and slices.
+        ty::TyArray(ety, _) | ty::TySlice(ety) => {
+            tcx.approx_align_of(param_env.and(ety))?
+        }
+        ty::TyStr => Some(dl.i8_align),
+
+        // Odd unit types.
+        ty::TyFnDef(..) | ty::TyDynamic(..) | ty::TyForeign(..) => {
+            Some(dl.aggregate_align)
+        }
+
+        // Tuples, generators and closures.
+        ty::TyGenerator(def_id, ref substs, _) => {
+            let tys = substs.field_tys(def_id, tcx);
+            univariant_align(tys.map(|ty| tcx.approx_align_of(param_env.and(ty))))?
+        }
+        ty::TyClosure(def_id, ref substs) => {
+            let tys = substs.upvar_tys(def_id, tcx);
+            univariant_align(tys.map(|ty| tcx.approx_align_of(param_env.and(ty))))?
+        }
+        ty::TyTuple(tys) => {
+            univariant_align(tys.iter().map(|ty| tcx.approx_align_of(param_env.and(ty))))?
+        }
+
+        // SIMD vector types.
+        ty::TyAdt(def, ..) if def.repr.simd() => {
+            let ety = ty.simd_type(tcx);
+            let count = ty.simd_size(tcx) as u64;
+            assert!(count > 0);
+            let esize = match ety.sty {
+                ty::TyInt(ity) => Integer::from_attr(dl, attr::SignedInt(ity)).size(),
+                ty::TyUint(ity) => Integer::from_attr(dl, attr::UnsignedInt(ity)).size(),
+                ty::TyFloat(FloatTy::F32) => Size::from_bits(32),
+                ty::TyFloat(FloatTy::F64) => Size::from_bits(64),
+                _ => {
+                    tcx.sess.fatal(&format!("monomorphising SIMD type `{}` with \
+                                            a non-machine element type `{}`",
+                                            ty, ety));
+                }
+            };
+            let size = esize.checked_mul(count, dl).ok_or(LayoutError::SizeOverflow(ty))?;
+            Some(dl.vector_align(size))
+        }
+
+        // ADTs.
+        ty::TyAdt(def, substs) => {
+            let mut align: Option<Align> = None;
+            for v in &def.variants {
+                let a = univariant_align(v.fields.iter().map(|f| {
+                    tcx.approx_align_of(param_env.and(f.ty(tcx, substs)))
+                }))?;
+                if let Some(a) = a {
+                    align = Some(align.map_or(a, |align| align.max(a)));
+                }
+            }
+            let mut align = match align {
+                Some(a) => a,
+                None => return Ok(None),
+            };
+            let mut align = if def.repr.packed() {
+                dl.i8_align
+            } else {
+                align.max(dl.aggregate_align)
+            };
+            if def.repr.align > 0 {
+                let repr_align = def.repr.align as u64;
+                align = align.max(Align::from_bytes(repr_align, repr_align).unwrap());
+            }
+            Some(align)
+        }
+
+        // Types with no meaningful known layout.
+        ty::TyProjection(_) | ty::TyAnon(..) => {
+            let normalized = tcx.normalize_erasing_regions(param_env, ty);
+            if ty == normalized {
+                return Err(LayoutError::Unknown(ty));
+            }
+            tcx.approx_align_of(param_env.and(normalized))?
+        }
+        ty::TyParam(_) => {
+            return Err(LayoutError::Unknown(ty));
+        }
+        ty::TyGeneratorWitness(..) | ty::TyInfer(_) | ty::TyError => {
+            bug!("LayoutDetails::compute: unexpected type `{}`", ty)
+        }
+    })
 }
 
 /// Type size "skeleton", i.e. the only information determining a type's size.

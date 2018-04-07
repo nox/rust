@@ -536,6 +536,7 @@ define_dep_nodes!( <'tcx>
     [] IsFreeze { param_env: ParamEnvAnd<'tcx, Ty<'tcx>> },
     [] NeedsDrop { param_env: ParamEnvAnd<'tcx, Ty<'tcx>> },
     [] Layout { param_env: ParamEnvAnd<'tcx, Ty<'tcx>> },
+    [] ApproxAlignOf { param_env: ParamEnvAnd<'tcx, Ty<'tcx>> },
 
     // The set of impls for a given trait.
     [] TraitImpls(DefId),

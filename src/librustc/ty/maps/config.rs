@@ -103,6 +103,12 @@ impl<'tcx> QueryDescription<'tcx> for queries::layout_raw<'tcx> {
     }
 }
 
+impl<'tcx> QueryDescription<'tcx> for queries::approx_align_of<'tcx> {
+    fn describe(_tcx: TyCtxt, env: ty::ParamEnvAnd<'tcx, Ty<'tcx>>) -> String {
+        format!("computing approximate alignment of `{}`", env.value)
+    }
+}
+
 impl<'tcx> QueryDescription<'tcx> for queries::super_predicates_of<'tcx> {
     fn describe(tcx: TyCtxt, def_id: DefId) -> String {
         format!("computing the supertraits of `{}`",

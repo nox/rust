@@ -944,6 +944,7 @@ pub fn force_from_dep_node<'a, 'gcx, 'lcx>(tcx: TyCtxt<'a, 'gcx, 'lcx>,
         DepKind::IsFreeze |
         DepKind::NeedsDrop |
         DepKind::Layout |
+        DepKind::ApproxAlignOf |
         DepKind::ConstEval |
         DepKind::InstanceSymbolName |
         DepKind::MirShim |
