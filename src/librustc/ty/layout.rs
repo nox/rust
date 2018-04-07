@@ -1228,7 +1228,7 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                     }
                     ty::TyDynamic(..) => {
                         let mut vtable = scalar_unit(Pointer);
-                        vtable.valid_range.start = 1;
+                        vtable.valid_range.start = dl.pointer_align.abi() as u128;
                         vtable
                     }
                     _ => return Err(LayoutError::Unknown(unsized_part))
